@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="robots" content="noindex, nofollow, noarchive">
 <title>Leftfield — Blending Log</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap');
@@ -127,11 +128,36 @@
   /* TOAST */
   .toast { position:fixed; bottom:32px; left:50%; transform:translateX(-50%) translateY(80px); background:var(--ink); color:#fff; padding:12px 22px; border-radius:24px; font-size:14px; font-weight:500; transition:transform 0.3s ease; z-index:999; white-space:nowrap; box-shadow:0 4px 20px rgba(0,0,0,0.3); max-width:90vw; }
   .toast.show { transform:translateX(-50%) translateY(0); }
+
+  /* VIEWER GATE (first-time per device) */
+  .viewer-gate { position:fixed; inset:0; background:var(--ink); z-index:9999; display:flex; align-items:center; justify-content:center; padding:24px; }
+  .vg-inner { width:100%; max-width:320px; text-align:center; color:#fff; }
+  .vg-brand { font-family:'DM Mono',monospace; font-size:11px; letter-spacing:0.15em; color:rgba(255,255,255,0.45); text-transform:uppercase; margin-bottom:6px; }
+  .vg-title { font-size:24px; font-weight:600; margin-bottom:30px; }
+  .vg-prompt { font-size:14px; color:rgba(255,255,255,0.65); margin-bottom:18px; }
+  .vg-input { font-family:'DM Mono',monospace; font-size:22px; letter-spacing:0.15em; text-align:center; width:100%; padding:14px; border:1.5px solid rgba(255,255,255,0.25); border-radius:10px; background:rgba(255,255,255,0.08); color:#fff; }
+  .vg-input::placeholder { color:rgba(255,255,255,0.3); }
+  .vg-input:focus { outline:none; border-color:var(--amber); background:rgba(255,255,255,0.12); }
+  .vg-error { font-size:12px; color:#F5D5D3; margin:10px 0 0; min-height:16px; }
+  .vg-btn { margin-top:14px; width:100%; padding:14px; border-radius:10px; background:var(--amber); color:#fff; font-size:16px; font-weight:600; border:none; cursor:pointer; font-family:'DM Sans',sans-serif; }
+  .vg-btn:active { background:#a96535; }
 </style>
 </head>
 <body>
 
-<div class="header">
+<!-- VIEWER LOCK — first-time per-device gate -->
+<div class="viewer-gate" id="viewerGate" style="display:none">
+  <div class="vg-inner">
+    <div class="vg-brand">Leftfield Coffee</div>
+    <div class="vg-title">Blending Log</div>
+    <div class="vg-prompt">Enter access code to continue</div>
+    <input class="vg-input" id="viewPinInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="••••••">
+    <div class="vg-error" id="viewPinError"></div>
+    <button class="vg-btn" onclick="checkViewPin()">Unlock</button>
+  </div>
+</div>
+
+<div class="header" id="appHeader">
   <div class="header-top">
     <span class="brand">Leftfield Coffee</span>
     <div class="header-right">
@@ -181,11 +207,18 @@
       <div class="set-section-title">Recent history snapshots</div>
       <div id="histList"></div>
 
-      <div class="set-section-title">Manager passcode</div>
+      <div class="set-section-title">Manager passcode (settings access)</div>
       <div class="set-field" style="margin-bottom:16px">
-        <label>Change passcode (leave blank to keep)</label>
+        <label>Change manager passcode (leave blank to keep)</label>
         <input id="newPin" type="tel" inputmode="numeric" maxlength="6" placeholder="New 4-digit passcode" oninput="this.value=this.value.replace(/[^0-9]/g,'')">
       </div>
+
+      <div class="set-section-title">Viewer access code (app entry)</div>
+      <div class="set-field" style="margin-bottom:10px">
+        <label>Change viewer code (leave blank to keep) — used by staff on first device open</label>
+        <input id="newViewPin" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="20" placeholder="New code">
+      </div>
+      <button class="set-add" style="margin-bottom:0" onclick="lockThisDevice()">🔒 Lock this device (require code again)</button>
 
       <div class="modal-foot">
         <button class="btn btn-cancel" onclick="closeModal('setModal')">Cancel</button>
@@ -209,7 +242,9 @@ const LS = {
   counts:   'lf2_counts',       // current week logged batches
   weekId:   'lf2_weekId',       // ISO week identifier currently active
   history:  'lf2_history',      // array of past week snapshots
-  pin:      'lf2_pin',          // manager passcode
+  pin:      'lf2_pin',          // manager passcode (settings)
+  viewPin:  'lf2_viewPin',      // viewer passcode (whole-app access)
+  viewOk:   'lf2_viewOk',       // flag: this device has unlocked viewer
 };
 
 // Default template — your fixed weekly blends. Each blend has a weekly target
@@ -228,6 +263,7 @@ const DEFAULT_TEMPLATE = [
   { name:'Decafe',         target:4,  days:['Friday'],             type:'fill'  },
 ];
 const DEFAULT_PIN = '1234';
+const DEFAULT_VIEW_PIN = 'coffee';
 
 // ── ISO week helpers ──
 function getWeekId(d){
@@ -298,6 +334,8 @@ function getTemplate(){
 function getCounts(){ return load(LS.counts, {}); }
 function getHistory(){ return load(LS.history, []); }
 function getPin(){ return localStorage.getItem(LS.pin) || DEFAULT_PIN; }
+function getViewPin(){ return localStorage.getItem(LS.viewPin) || DEFAULT_VIEW_PIN; }
+function isViewerUnlocked(){ return localStorage.getItem(LS.viewOk) === '1'; }
 
 // ─────────────────────────────────────────────────────────────
 //  WEEK ROLLOVER  (auto-reset Monday, snapshot to history)
@@ -538,6 +576,7 @@ function openSettings(){
   renderSettings();
   renderHistoryList();
   document.getElementById('newPin').value='';
+  const vp = document.getElementById('newViewPin'); if(vp) vp.value='';
   document.getElementById('setModal').classList.add('show');
 }
 
@@ -616,13 +655,22 @@ function saveSettings(){
   }
   // commit template
   save(LS.template, draftTemplate);
-  // optional pin change
+  // optional manager pin change
   const np = document.getElementById('newPin').value;
   if(np && np.length>=4){ safeSet(LS.pin, np); }
+  // optional viewer pin change
+  const nvp = (document.getElementById('newViewPin').value || '').trim();
+  if(nvp && nvp.length>=4){ safeSet(LS.viewPin, nvp); }
   closeModal('setModal');
   if(day>4||day<0) day=0;
   render();
   showToast('Settings saved ✓');
+}
+
+function lockThisDevice(){
+  if(!confirm('Lock this device? The viewer access code will be required next time the app is opened here.')) return;
+  try { localStorage.removeItem(LS.viewOk); } catch(e){}
+  location.reload();
 }
 
 // ── history list in settings ──
@@ -731,25 +779,49 @@ function sendSummary(){
   showToast('Opening Mail app…');
 }
 
+function checkViewPin(){
+  const val = (document.getElementById('viewPinInput').value || '').trim();
+  if(val === getViewPin()){
+    safeSet(LS.viewOk, '1');
+    document.getElementById('viewerGate').style.display = 'none';
+    bootApp();
+  } else {
+    document.getElementById('viewPinError').textContent = 'Incorrect code';
+    document.getElementById('viewPinInput').value = '';
+    document.getElementById('viewPinInput').focus();
+  }
+}
+
+function bootApp(){
+  checkRollover();
+  day = defaultDayIndex();
+  render();
+  // Event delegation: count +/- buttons (robust to any char in blend names)
+  document.getElementById('blendList').addEventListener('click', e=>{
+    const btn = e.target.closest('.count-btn');
+    if(!btn || btn.classList.contains('disabled') || btn.disabled) return;
+    const name = btn.dataset.name;
+    const delta = parseInt(btn.dataset.delta,10);
+    if(name && Number.isFinite(delta)) adj(name, delta);
+  });
+  // re-check rollover if the tab is left open across midnight/Monday
+  setInterval(checkRollover, 60*60*1000);
+  document.addEventListener('visibilitychange',()=>{ if(!document.hidden){ checkRollover(); render(); }});
+}
+
 // ─────────────────────────────────────────────────────────────
 //  BOOT
 // ─────────────────────────────────────────────────────────────
-checkRollover();
-day = defaultDayIndex();
-render();
-
-// Event delegation: count +/- buttons (robust to any char in blend names)
-document.getElementById('blendList').addEventListener('click', e=>{
-  const btn = e.target.closest('.count-btn');
-  if(!btn || btn.classList.contains('disabled') || btn.disabled) return;
-  const name = btn.dataset.name;          // browser auto-decodes HTML entities
-  const delta = parseInt(btn.dataset.delta,10);
-  if(name && Number.isFinite(delta)) adj(name, delta);
-});
-
-// re-check rollover if the tab is left open across midnight/Monday
-setInterval(checkRollover, 60*60*1000);
-document.addEventListener('visibilitychange',()=>{ if(!document.hidden){ checkRollover(); render(); }});
+if(isViewerUnlocked()){
+  bootApp();
+} else {
+  document.getElementById('viewerGate').style.display = 'flex';
+  setTimeout(()=>document.getElementById('viewPinInput').focus(), 200);
+  // Allow Enter key to submit
+  document.getElementById('viewPinInput').addEventListener('keydown', e=>{
+    if(e.key==='Enter') checkViewPin();
+  });
+}
 </script>
 </body>
 </html>
